@@ -78,15 +78,23 @@ Sub test_MBFanalytics()
 
   ' Exemple extraction d'options (Phuong-Linh NHU, Agathe CANEL, Vanessa JIN)
     Sub test_MBFanalytics()
+        Dim m As mbfAnalytics
+        Set m = New mbfAnalytics
+    
+        m.initKey "1456eb71e7mshe238a98cab7fd2dp17a004jsn39f15b02097a"
+        
+        Call m.Options("Options", "NVDA", "en-US", "US")
+    End Sub
+
+' *************************************
+' Invocation EPS Estimates (Agathe Echegut, Axelle Bouy, Tim Hembise)
     Dim m As mbfAnalytics
     Set m = New mbfAnalytics
 
-    m.initKey "1456eb71e7mshe238a98cab7fd2dp17a004jsn39f15b02097a"
-    
-    Call m.Options("Options", "NVDA", "en-US", "US")
+    m.initKey "824872f2efmsh8323132c5b25c0fp103ebejsnc541d1c7fc57"
 
-End Sub
-
+    Call m.EPS_Estimates("EPS_Estimates", "TCS", "EPS", "Annual", "Estimates", "Current")
+' *************************************
 
 End Sub
 ```
