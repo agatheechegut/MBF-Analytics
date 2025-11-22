@@ -376,6 +376,257 @@ Public Sub maMethode(Optional ByVal sheetname = " ** maMethode ** ", Optional By
     
 End Sub
 
+' ***************************
+' Earning Per Share Estimate
+' ***************************
+' Auteur : Agathe Echegut, Axelle Bouy, Tim Hembise
+' Lien vers la page API :
+'   https://rapidapi.com/linuz/api/indian-stock-exchange-api2/
+'
+' Params avec valeur d'exemple :
+'  sheetname    = "EPS_Estimates" nom de la feuille créée
+'  stock_id     = "TCS"
+'  measure_code = "EPS" ou CPS, CPX, DPS, EBI, EBT, GPS, GRM, NAV, NDT, NET, PRE, ROA, ROE, SAL
+'  period_type  = "Annual" ou Interim
+'  data_type    = "Estimates" ou Actuals
+'  age          = "Current" ou OneWeekAgo, ThirtyDaysAgo, SixtyDaysAgo, NinetyDaysAgo
+'
+' Retour :
+'  Résultats formatés sur feuille Excel [sheetname]
+
+Public Sub EPS_Estimates( _
+    Optional ByVal sheetname As String = "EPS_Estimates", _
+    Optional ByVal stock_id As String = "TCS", _
+    Optional ByVal measure_code As String = "EPS", _
+    Optional ByVal period_type As String = "Annual", _
+    Optional ByVal data_type As String = "Estimates", _
+    Optional ByVal age As String = "Current" _
+)
+    
+    'déclarations
+    Dim hote As String, epqs As String, u As String, s As String
+    Dim hAPI As Variant
+    Dim w As Worksheet
+    Dim o As Object
+    Dim snaps As Object, snaps4 As Object, snap As Object
+    Dim key As Variant, keysToInclude As Variant, foundmatch As Variant
+    Dim col As Long, j As Long, ligne As Long
+    Dim idx As Long, an As Long, annéeActuelle As Long
+    Dim firstFutureIndex As Long
+    Dim t As ListObject
+        
+    ' 1) Etat de la connexion Rapide API
+    Call testErreur
+    
+    ' Parties de la Requête à l'API
+    ' Hote
+    hote = "indian-stock-exchange-api2.p.rapidapi.com"
+    ' Endpoint?Query String avec Paramètres génériques en majuscule
+    epqs = "/stock_forecasts?stock_id=TCS&measure_code=EPS&period_type=Annual&data_type=Estimates&age=Current" ' avec mot générique pour les paramètres
+    
+    ' Encodage URL des PARAMS
+    stock_id = WorksheetFunction.EncodeURL(stock_id)
+    measure_code = WorksheetFunction.EncodeURL(measure_code)
+    period_type = WorksheetFunction.EncodeURL(period_type)
+    data_type = WorksheetFunction.EncodeURL(data_type)
+    age = WorksheetFunction.EncodeURL(age)
+    
+    ' Intégration des PARAMS dans la Query String: remplacement des valeurs
+    epqs = Replace(epqs, "TCS", stock_id)
+    epqs = Replace(epqs, "EPS", measure_code)
+    epqs = Replace(epqs, "Annual", period_type)
+    epqs = Replace(epqs, "Estimates", data_type)
+    epqs = Replace(epqs, "Current", age)
+       
+    u = "https://" & hote & epqs
+    hAPI = Array( _
+        "X-Rapidapi-Key: " & apikey, _
+        "X-Rapidapi-Host: " & hote, _
+        "Content-Type: Application/json; charset=utf-8")
+    
+    s = h.getHttp(url:=u, headers:=hAPI)
+    Debug.Print s
+    
+    ' Batterie de test d'erreur sur resultat de la requête
+    Call testErreur(resultat:=s)
+    If status <> "ok" Then
+        MsgBox "Erreur : " & status, vbCritical, "MBF Analytics"
+        Exit Sub
+    End If
+        
+    
+    ' 2) Déchiffrement expression JSON en objet VBA
+    On Error GoTo JsonError
+    Set o = JsonConverter.ParseJson(s)
+    On Error GoTo 0
+    
+    If Not o.Exists("periods") Then
+        status = "JSON inattendu (pas de 'periods')"
+        Call testErreur(resultat:=s)
+        MsgBox "Réponse API inattendue (pas de 'periods').", vbCritical, "MBF Analytics"
+        Exit Sub
+    End If
+
+    
+    ' 3) Chargement sur feuille Excel des cartouches
+    
+    ' Recherche feuille Excel ou création feuille
+    Set w = getOrCreateSheet(sheetname)
+    
+    With w
+        ' Purger la feuille w
+        .Cells.Clear
+        
+        ' Inscrire les paramètres de la requête API sur la feuille w
+        .[A1] = "Stock_id"
+        .[A2] = "Measure_code"
+        .[D1] = "Period_type"
+        .[D2] = "Data_type"
+        .[G1] = "Age"
+        .[G2] = "Currency"
+            
+        .[B1] = stock_id
+        .[B2] = measure_code
+        .[E1] = period_type
+        .[E2] = data_type
+        .[H1] = age
+        
+    End With
+                          
+    ' 4) définition des champs pertinents à conserver (filtrage inclusif)
+    keysToInclude = Array("Mean", "High", "Low", "Median", "StandardDeviation", "Age", "SmartEstimate")
+    
+    ' 5) Ecriture des titres dynamiques (firstFutureIndex comme modèle)
+    ' Trouver le premier index futur comme modèle
+    annéeActuelle = Year(Date)
+    firstFutureIndex = 0 ' Initialiser l'index à zéro
+        
+    ' Recherche de la première période future
+    For idx = 1 To o("periods").Count
+        If o("periods")(idx).Exists("CalendarYear") Then
+            an = o("periods")(idx)("CalendarYear")   ' Extrait l'année de la période de l'API
+                
+            If an > annéeActuelle Then
+                firstFutureIndex = idx
+                Exit For ' On a trouvé le premier index, on sort de la boucle
+            End If
+        End If
+    Next idx
+    
+    If firstFutureIndex = 0 Then
+        status = "Aucune période future trouvée"
+        Call testErreur(resultat:=s)
+        MsgBox "Aucune période future (CalendarYear > " & annéeActuelle & _
+               ") trouvée pour " & stock_id & ".", vbInformation, "MBF Analytics"
+        Exit Sub
+    End If
+        
+    'sécurité si l'API renvoie bien des snapshots pour cette période modèle
+    If o("periods")(firstFutureIndex).Exists("EstimateSnapshots") Then
+        If o("periods")(firstFutureIndex)("EstimateSnapshots").Exists("EstimateSnapshot") Then
+    
+            'on récupère les snapshots de periods(firstFutureIndex)
+            Set snaps4 = o("periods")(firstFutureIndex)("EstimateSnapshots")("EstimateSnapshot")
+            If snaps4.Count = 0 Then
+                MsgBox "Aucun snapshot trouvé pour la période future modèle.", vbInformation, "MBF Analytics"
+                Exit Sub
+            End If
+            
+            Set snap = snaps4(1)       'on prend le 1er snapshot comme modèle de structure
+                
+            col = 2 'colonne B
+            For Each key In snap.Keys
+                
+                ' Recherche la clé (key) dans le tableau d'inclusion (keysToInclude)
+                On Error Resume Next
+                foundmatch = Application.Match(key, keysToInclude, 0)
+                On Error GoTo 0
+                
+                If Not IsError(foundmatch) Then
+                    w.Cells(4, col) = key 'ligne des titres
+                    col = col + 1
+                End If
+            
+            Next key
+                
+            ' Ecriture du titre CalendarYear
+            w.Cells(4, 1) = "CalendarYear"
+            
+            ' Ecriture la devise une seule fois en H2
+            If snap.Exists("CurrencyCode") Then
+                w.[H2] = snap("CurrencyCode")
+            End If
+    
+        End If
+    End If
+        
+    
+    ' 6) Grand tableau générique pour les périodes futures
+    
+    ' Initialisation de la ligne de depart excel
+    ligne = 5
+    For idx = 1 To o("periods").Count
+               
+        ' Vérifie qu'on a CalendarYear
+        If o("periods")(idx).Exists("CalendarYear") Then
+            an = o("periods")(idx)("CalendarYear")   ' Extrait l'année de la période de l'API
+            
+            ' Filtre: on ne traite et n'affiche que les données dont l'année est postérieure à l'année actuelle
+            If an > annéeActuelle Then
+           
+               'sécurité si l'API renvoie des snapshots
+               If o("periods")(idx).Exists("EstimateSnapshots") Then
+                    If o("periods")(idx)("EstimateSnapshots").Exists("EstimateSnapshot") Then
+            
+                        Set snaps = o("periods")(idx)("EstimateSnapshots")("EstimateSnapshot")
+                                            
+                        For j = 1 To snaps.Count
+    
+                            w.Cells(ligne, 1) = an
+                            
+                            Set snap = snaps(j)
+                            col = 2                     'on repart de la colonne B à chaque nouvelle ligne
+                        
+                            For Each key In snap.Keys
+                                ' On gère l'erreur #N/A si la clé n'est pas trouvée dans keysToInclude
+                                On Error Resume Next
+                                foundmatch = Application.Match(key, keysToInclude, 0)
+                                On Error GoTo 0
+                                
+                                ' Si Match réussit (n'est pas une erreur #N/A), on affiche la colonne
+                                If Not IsError(foundmatch) Then
+                                    w.Cells(ligne, col) = snap(key)
+                                    col = col + 1
+                                End If
+                            Next key
+                        
+                           ' Avance à la ligne suivante pour le prochain snapshot
+                           ligne = ligne + 1
+                        
+                        Next j  ' Fin de la boucle des snapshots
+                    End If
+                End If
+            
+            End If
+        End If
+        
+    Next idx
+    
+    
+    ' 7) mise en forme finale (tableau structuré)
+    Set t = w.ListObjects.Add(xlSrcRange, w.[A4].CurrentRegion, xlYes)
+
+    ' Ajustement des colonnes automatique
+    w.UsedRange.Columns.AutoFit
+    
+    Exit Sub
+
+JsonError:
+    status = "Erreur de parsing JSON"
+    Call testErreur(resultat:=s)
+    MsgBox "Réponse API non valide (JSON).", vbCritical, "MBF Analytics"
+End Sub
+
 
 
 ' *************************************
@@ -2655,6 +2906,7 @@ End Sub
 'GMT-10' 'Honolulu'
 'GMT-11' 'NiuÈ'
 'GMT-12' 'Baker Island'"
+
 
 
 
